@@ -12,7 +12,17 @@
     body { margin: 0; background: #000; color: #fff; font-family: system-ui, -apple-system, sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
     #video-container { position: relative; flex: 1; overflow: hidden; }
     video { width: 100%; height: 100%; object-fit: cover; }
-    .overlay { position: absolute; top: 30%; left: 10%; width: 80%; height: 25%; border: 2px dashed #00ffcc; border-radius: 12px; pointer-events: none; box-shadow: 0 0 0 9999px rgba(0,0,0,0.45); }
+    .overlay { 
+      position: absolute; 
+      top: 35%; 
+      left: 10%; 
+      width: 80%; 
+      height: 20%; 
+      border: 2px dashed #00ffcc; 
+      border-radius: 12px; 
+      pointer-events: none; 
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55); 
+    }
     #bottom-panel { background: #181818; padding: 20px; border-radius: 24px 24px 0 0; display: flex; flex-direction: column; align-items: center; min-height: 200px; }
     .detected { font-size: 1rem; color: #888; margin-bottom: 4px; }
     .converted { font-size: 2.2rem; font-weight: 700; color: #00ffcc; margin-bottom: 12px; }
@@ -23,10 +33,10 @@
 <body>
   <div id="video-container">
     <video id="webcam" autoplay playsinline muted></video>
-    <div class="overlay"></div>
+    <div id="scan-frame" class="overlay"></div>
   </div>
   <div id="bottom-panel">
-    <div id="detected-text" class="detected">Fiyatı çerçeveye hizalayın</div>
+    <div id="detected-text" class="detected">Fiyatı yeşil kutuya ortalayın</div>
     <div id="converted-val" class="converted">₺0.00</div>
     <button id="scan-btn" onclick="captureAndConvert()">Fiyatı Oku ve Çevir</button>
   </div>
@@ -34,6 +44,9 @@
 
   <script>
     const rates = { USD: 0, EUR: 0, GBP: 0, JPY: 0, AED: 0 };
+    let tesseractWorker = null;
+
+    // 1. Kurları Çek
     async function fetchRates() {
       try {
         const res = await fetch("https://open.er-api.com/v6/latest/TRY");
@@ -43,15 +56,35 @@
         rates.GBP = 1 / data.rates.GBP;
         rates.JPY = 1 / data.rates.JPY;
         rates.AED = 1 / data.rates.AED;
-      } catch (e) { console.error("Kur hatası", e); }
+      } catch (e) {
+        console.error("Kur hatası:", e);
+      }
     }
+
+    // 2. OCR Motorunu Arka Planda Hazırla (İlk tıklamada bekleme süresini yok eder)
+    async function initWorker() {
+      tesseractWorker = await Tesseract.createWorker('eng');
+      await tesseractWorker.setParameters({
+        tessedit_char_whitelist: '0123456789.,$€£¥AEDTRYabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
+      });
+    }
+
     fetchRates();
+    initWorker();
 
+    // 3. Kamera Başlatma
     const video = document.getElementById('webcam');
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
-      .then(stream => video.srcObject = stream)
-      .catch(err => alert("Kamera izni veriniz: " + err));
+    navigator.mediaDevices.getUserMedia({ 
+      video: { 
+        facingMode: "environment",
+        width: { ideal: 1920 },
+        height: { ideal: 1080 }
+      } 
+    })
+    .then(stream => video.srcObject = stream)
+    .catch(err => alert("Kamera izni veriniz: " + err));
 
+    // 4. Döviz ve Miktar Ayrıştırma
     function parseCurrency(raw) {
       const symbols = [
         { regex: /[$|USD]/i, code: 'USD' },
@@ -60,38 +93,84 @@
         { regex: /[¥|JPY]/i, code: 'JPY' },
         { regex: /AED/i, code: 'AED' }
       ];
+
       let detectedCode = 'USD';
       for (let s of symbols) {
-        if (s.regex.test(raw)) { detectedCode = s.code; break; }
+        if (s.regex.test(raw)) {
+          detectedCode = s.code;
+          break;
+        }
       }
-      const numMatch = raw.match(/(\d+([.,]\d{1,2})?)/);
-      if (!numMatch) return null;
-      return { code: detectedCode, amount: parseFloat(numMatch[0].replace(',', '.')) };
+
+      // Sayı yakala (örn: 12.99, 12,99 veya 1200)
+      const matches = raw.match(/\d+([.,]\d{1,2})?/g);
+      if (!matches) return null;
+
+      // Genelde en büyük veya tek olan sayı fiyattır
+      const cleanVal = matches[0].replace(',', '.');
+      return { code: detectedCode, amount: parseFloat(cleanVal) };
     }
 
+    // 5. Kırpma, Kontrastlama ve Okuma
     async function captureAndConvert() {
       const btn = document.getElementById('scan-btn');
       const det = document.getElementById('detected-text');
       const conv = document.getElementById('converted-val');
       btn.disabled = true;
-      det.innerText = "Taranıyor...";
+      det.innerText = "Okunuyor...";
+
+      // Ekran üzerindeki video ve çerçeve boyutları
+      const videoRect = video.getBoundingClientRect();
+      const frameRect = document.getElementById('scan-frame').getBoundingClientRect();
+
+      // object-fit: cover oranlarını ve gerçek video çözünürlüğünü hesapla
+      const scale = Math.max(video.videoWidth / videoRect.width, video.videoHeight / videoRect.height);
+      const renderedW = videoRect.width * scale;
+      const renderedH = videoRect.height * scale;
+      const offsetX = (renderedW - video.videoWidth) / 2;
+      const offsetY = (renderedH - video.videoHeight) / 2;
+
+      // Çerçevenin gerçek video karesindeki koordinatları (Crop Alanı)
+      const cropX = Math.max(0, (frameRect.left - videoRect.left) * scale - offsetX);
+      const cropY = Math.max(0, (frameRect.top - videoRect.top) * scale - offsetY);
+      const cropW = frameRect.width * scale;
+      const cropH = frameRect.height * scale;
 
       const canvas = document.getElementById('snapshot');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      canvas.width = cropW;
+      canvas.height = cropH;
       const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0);
 
-      const { data: { text } } = await Tesseract.recognize(canvas, 'eng');
-      const result = parseCurrency(text);
+      // Yalnızca seçili kutu alanını çiz
+      ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
-      if (result && rates[result.code]) {
-        const total = (result.amount * rates[result.code]).toFixed(2);
-        det.innerText = `Tespit Edilen: ${result.amount} ${result.code}`;
-        conv.innerText = `₺${total}`;
-      } else {
-        det.innerText = "Fiyat okunamadı. Netleştirip tekrar deneyin.";
+      // Görüntü İşleme: Kontrast ve Siyah-Beyaz Eşikleme (Binarization)
+      const imgData = ctx.getImageData(0, 0, cropW, cropH);
+      const d = imgData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        const v = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114); // Gri tonlama
+        const threshold = v > 128 ? 255 : 0; // Siyah-beyaz eşiği
+        d[i] = d[i + 1] = d[i + 2] = threshold;
       }
+      ctx.putImageData(imgData, 0, 0);
+
+      // OCR Çalıştır
+      try {
+        const { data: { text } } = await tesseractWorker.recognize(canvas);
+        const result = parseCurrency(text);
+
+        if (result && !isNaN(result.amount) && rates[result.code]) {
+          const total = (result.amount * rates[result.code]).toFixed(2);
+          det.innerText = `Okunan: ${result.amount} ${result.code}`;
+          conv.innerText = `₺${total}`;
+        } else {
+          det.innerText = "Fiyat tespit edilemedi. Biraz daha yaklaştırın.";
+        }
+      } catch (err) {
+        console.error(err);
+        det.innerText = "Tarama hatası oluştu.";
+      }
+
       btn.disabled = false;
     }
 
