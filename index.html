@@ -26,31 +26,31 @@
       box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55); 
     }
 
-    /* Fener (Torch) Butonu */
+    /* Fener Butonu - Her zaman görünür ve belirgin */
     #torch-btn {
       position: absolute;
-      top: 20px;
-      right: 20px;
-      width: 48px;
-      height: 48px;
+      top: 24px;
+      right: 24px;
+      width: 52px;
+      height: 52px;
       border-radius: 50%;
-      background: rgba(0, 0, 0, 0.6);
-      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: rgba(20, 20, 20, 0.75);
+      border: 2px solid rgba(255, 255, 255, 0.3);
       color: #fff;
-      font-size: 1.3rem;
+      font-size: 1.5rem;
       display: flex;
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      backdrop-filter: blur(8px);
-      transition: all 0.2s ease;
-      z-index: 10;
+      backdrop-filter: blur(10px);
+      z-index: 99;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
     }
     #torch-btn.active {
       background: #00ffcc;
       color: #000;
       border-color: #00ffcc;
-      box-shadow: 0 0 16px rgba(0, 255, 204, 0.6);
+      box-shadow: 0 0 20px rgba(0, 255, 204, 0.8);
     }
 
     #bottom-panel { background: #181818; padding: 20px; border-radius: 24px 24px 0 0; display: flex; flex-direction: column; align-items: center; min-height: 200px; }
@@ -64,7 +64,7 @@
 
   <div id="video-container">
     <video id="webcam" autoplay playsinline muted></video>
-    <button id="torch-btn" onclick="toggleTorch()" style="display: none;" title="Feneri Aç/Kapat">🔦</button>
+    <button id="torch-btn" onclick="toggleTorch()" title="Fener">🔦</button>
     <div id="scan-frame" class="overlay"></div>
   </div>
 
@@ -82,7 +82,6 @@
     let videoTrack = null;
     let isTorchOn = false;
 
-    // 1. Kurları Çek
     async function fetchRates() {
       try {
         const res = await fetch("https://open.er-api.com/v6/latest/TRY");
@@ -97,7 +96,6 @@
       }
     }
 
-    // 2. Tesseract Worker'ı Arka Planda Hazırla
     async function initWorker() {
       tesseractWorker = await Tesseract.createWorker('eng');
       await tesseractWorker.setParameters({
@@ -108,52 +106,56 @@
     fetchRates();
     initWorker();
 
-    // 3. Kamera & Fener Donanımını Başlat
     const video = document.getElementById('webcam');
     const torchBtn = document.getElementById('torch-btn');
 
-    navigator.mediaDevices.getUserMedia({ 
-      video: { 
-        facingMode: "environment",
-        width: { ideal: 1920 },
-        height: { ideal: 1080 }
-      } 
-    })
-    .then(stream => {
-      video.srcObject = stream;
-      videoTrack = stream.getVideoTracks()[0];
-
-      // Cihazın flaş/fener desteği var mı kontrol et
-      const capabilities = videoTrack.getCapabilities ? videoTrack.getCapabilities() : {};
-      if (capabilities.torch) {
-        torchBtn.style.display = 'flex';
+    // Kamera Başlatma
+    async function startCamera() {
+      try {
+        const constraints = {
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 }
+          }
+        };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = stream;
+        videoTrack = stream.getVideoTracks()[0];
+      } catch (err) {
+        alert("Kamera açılamadı: " + err.message);
       }
-    })
-    .catch(err => alert("Kamera izni gerekiyor: " + err));
+    }
+    startCamera();
 
-    // Fener Aç/Kapa Fonksiyonu
+    // Fener Kontrolü
     async function toggleTorch() {
-      if (!videoTrack) return;
+      if (!videoTrack) {
+        alert("Kamera henüz hazır değil.");
+        return;
+      }
+
       try {
         isTorchOn = !isTorchOn;
         await videoTrack.applyConstraints({
           advanced: [{ torch: isTorchOn }]
         });
         torchBtn.classList.toggle('active', isTorchOn);
-        vibrate(30); // Buton dokunma hissi
+        vibrate(30);
       } catch (err) {
-        console.error("Fener açılamadı:", err);
+        // Eğer cihaz donanımsal olarak torch desteklemiyorsa
+        isTorchOn = false;
+        torchBtn.classList.remove('active');
+        alert("Cihazınız veya tarayıcınız bu kamerada flaş kontrolüne izin vermiyor.");
       }
     }
 
-    // Titreşim Yardımcısı
     function vibrate(pattern) {
       if ('vibrate' in navigator) {
         navigator.vibrate(pattern);
       }
     }
 
-    // 4. Döviz ve Rakam Ayrıştırma
     function parseCurrency(raw) {
       const symbols = [
         { regex: /[$|USD]/i, code: 'USD' },
@@ -178,7 +180,6 @@
       return { code: detectedCode, amount: parseFloat(cleanVal) };
     }
 
-    // 5. Kırpma, OCR ve Çevrim
     async function captureAndConvert() {
       const btn = document.getElementById('scan-btn');
       const det = document.getElementById('detected-text');
@@ -207,7 +208,6 @@
 
       ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
-      // Kontrast & Siyah-Beyaz Eşikleme
       const imgData = ctx.getImageData(0, 0, cropW, cropH);
       const d = imgData.data;
       for (let i = 0; i < d.length; i += 4) {
@@ -225,11 +225,9 @@
           const total = (result.amount * rates[result.code]).toFixed(2);
           det.innerText = `Okunan: ${result.amount} ${result.code}`;
           conv.innerText = `₺${total}`;
-          // Başarılı algılama: çift vuruşlu onay titreşimi
           vibrate([60, 40, 60]);
         } else {
           det.innerText = "Fiyat tespit edilemedi. Tekrar deneyin.";
-          // Hata / okunamadı uyarısı: tek uzun titreşim
           vibrate(120);
         }
       } catch (err) {
