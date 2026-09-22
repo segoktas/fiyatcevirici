@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Fiyat Çevirici</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#121212">
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #000; color: #fff; font-family: system-ui, -apple-system, sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+    #video-container { position: relative; flex: 1; overflow: hidden; }
+    video { width: 100%; height: 100%; object-fit: cover; }
+    .overlay { position: absolute; top: 30%; left: 10%; width: 80%; height: 25%; border: 2px dashed #00ffcc; border-radius: 12px; pointer-events: none; box-shadow: 0 0 0 9999px rgba(0,0,0,0.45); }
+    #bottom-panel { background: #181818; padding: 20px; border-radius: 24px 24px 0 0; display: flex; flex-direction: column; align-items: center; min-height: 200px; }
+    .detected { font-size: 1rem; color: #888; margin-bottom: 4px; }
+    .converted { font-size: 2.2rem; font-weight: 700; color: #00ffcc; margin-bottom: 12px; }
+    button { width: 100%; max-width: 320px; padding: 14px; font-size: 1.1rem; border-radius: 50px; border: none; background: #00ffcc; color: #000; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: 0.5; }
+  </style>
+</head>
+<body>
+  <div id="video-container">
+    <video id="webcam" autoplay playsinline muted></video>
+    <div class="overlay"></div>
+  </div>
+  <div id="bottom-panel">
+    <div id="detected-text" class="detected">Fiyatı çerçeveye hizalayın</div>
+    <div id="converted-val" class="converted">₺0.00</div>
+    <button id="scan-btn" onclick="captureAndConvert()">Fiyatı Oku ve Çevir</button>
+  </div>
+  <canvas id="snapshot" style="display:none;"></canvas>
+
+  <script>
+    const rates = { USD: 0, EUR: 0, GBP: 0, JPY: 0, AED: 0 };
+    async function fetchRates() {
+      try {
+        const res = await fetch("https://open.er-api.com/v6/latest/TRY");
+        const data = await res.json();
+        rates.USD = 1 / data.rates.USD;
+        rates.EUR = 1 / data.rates.EUR;
+        rates.GBP = 1 / data.rates.GBP;
+        rates.JPY = 1 / data.rates.JPY;
+        rates.AED = 1 / data.rates.AED;
+      } catch (e) { console.error("Kur hatası", e); }
+    }
+    fetchRates();
+
+    const video = document.getElementById('webcam');
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+      .then(stream => video.srcObject = stream)
+      .catch(err => alert("Kamera izni veriniz: " + err));
+
+    function parseCurrency(raw) {
+      const symbols = [
+        { regex: /[$|USD]/i, code: 'USD' },
+        { regex: /[€|EUR]/i, code: 'EUR' },
+        { regex: /[£|GBP]/i, code: 'GBP' },
+        { regex: /[¥|JPY]/i, code: 'JPY' },
+        { regex: /AED/i, code: 'AED' }
+      ];
+      let detectedCode = 'USD';
+      for (let s of symbols) {
+        if (s.regex.test(raw)) { detectedCode = s.code; break; }
+      }
+      const numMatch = raw.match(/(\d+([.,]\d{1,2})?)/);
+      if (!numMatch) return null;
+      return { code: detectedCode, amount: parseFloat(numMatch[0].replace(',', '.')) };
+    }
+
+    async function captureAndConvert() {
+      const btn = document.getElementById('scan-btn');
+      const det = document.getElementById('detected-text');
+      const conv = document.getElementById('converted-val');
+      btn.disabled = true;
+      det.innerText = "Taranıyor...";
+
+      const canvas = document.getElementById('snapshot');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0);
+
+      const { data: { text } } = await Tesseract.recognize(canvas, 'eng');
+      const result = parseCurrency(text);
+
+      if (result && rates[result.code]) {
+        const total = (result.amount * rates[result.code]).toFixed(2);
+        det.innerText = `Tespit Edilen: ${result.amount} ${result.code}`;
+        conv.innerText = `₺${total}`;
+      } else {
+        det.innerText = "Fiyat okunamadı. Netleştirip tekrar deneyin.";
+      }
+      btn.disabled = false;
+    }
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+  </script>
+</body>
+</html>
