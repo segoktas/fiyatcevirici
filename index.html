@@ -8,10 +8,12 @@
   <meta name="theme-color" content="#121212">
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <style>
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     body { margin: 0; background: #000; color: #fff; font-family: system-ui, -apple-system, sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
     #video-container { position: relative; flex: 1; overflow: hidden; }
     video { width: 100%; height: 100%; object-fit: cover; }
+    
+    /* Yeşil Tarama Çerçevesi */
     .overlay { 
       position: absolute; 
       top: 35%; 
@@ -19,32 +21,66 @@
       width: 80%; 
       height: 20%; 
       border: 2px dashed #00ffcc; 
-      border-radius: 12px; 
+      border-radius: 14px; 
       pointer-events: none; 
       box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55); 
     }
+
+    /* Fener (Torch) Butonu */
+    #torch-btn {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: #fff;
+      font-size: 1.3rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      backdrop-filter: blur(8px);
+      transition: all 0.2s ease;
+      z-index: 10;
+    }
+    #torch-btn.active {
+      background: #00ffcc;
+      color: #000;
+      border-color: #00ffcc;
+      box-shadow: 0 0 16px rgba(0, 255, 204, 0.6);
+    }
+
     #bottom-panel { background: #181818; padding: 20px; border-radius: 24px 24px 0 0; display: flex; flex-direction: column; align-items: center; min-height: 200px; }
     .detected { font-size: 1rem; color: #888; margin-bottom: 4px; }
     .converted { font-size: 2.2rem; font-weight: 700; color: #00ffcc; margin-bottom: 12px; }
-    button { width: 100%; max-width: 320px; padding: 14px; font-size: 1.1rem; border-radius: 50px; border: none; background: #00ffcc; color: #000; font-weight: 700; cursor: pointer; }
-    button:disabled { opacity: 0.5; }
+    button.scan { width: 100%; max-width: 320px; padding: 14px; font-size: 1.1rem; border-radius: 50px; border: none; background: #00ffcc; color: #000; font-weight: 700; cursor: pointer; }
+    button.scan:disabled { opacity: 0.5; }
   </style>
 </head>
 <body>
+
   <div id="video-container">
     <video id="webcam" autoplay playsinline muted></video>
+    <button id="torch-btn" onclick="toggleTorch()" style="display: none;" title="Feneri Aç/Kapat">🔦</button>
     <div id="scan-frame" class="overlay"></div>
   </div>
+
   <div id="bottom-panel">
     <div id="detected-text" class="detected">Fiyatı yeşil kutuya ortalayın</div>
     <div id="converted-val" class="converted">₺0.00</div>
-    <button id="scan-btn" onclick="captureAndConvert()">Fiyatı Oku ve Çevir</button>
+    <button id="scan-btn" class="scan" onclick="captureAndConvert()">Fiyatı Oku ve Çevir</button>
   </div>
+
   <canvas id="snapshot" style="display:none;"></canvas>
 
   <script>
     const rates = { USD: 0, EUR: 0, GBP: 0, JPY: 0, AED: 0 };
     let tesseractWorker = null;
+    let videoTrack = null;
+    let isTorchOn = false;
 
     // 1. Kurları Çek
     async function fetchRates() {
@@ -61,7 +97,7 @@
       }
     }
 
-    // 2. OCR Motorunu Arka Planda Hazırla (İlk tıklamada bekleme süresini yok eder)
+    // 2. Tesseract Worker'ı Arka Planda Hazırla
     async function initWorker() {
       tesseractWorker = await Tesseract.createWorker('eng');
       await tesseractWorker.setParameters({
@@ -72,8 +108,10 @@
     fetchRates();
     initWorker();
 
-    // 3. Kamera Başlatma
+    // 3. Kamera & Fener Donanımını Başlat
     const video = document.getElementById('webcam');
+    const torchBtn = document.getElementById('torch-btn');
+
     navigator.mediaDevices.getUserMedia({ 
       video: { 
         facingMode: "environment",
@@ -81,10 +119,41 @@
         height: { ideal: 1080 }
       } 
     })
-    .then(stream => video.srcObject = stream)
-    .catch(err => alert("Kamera izni veriniz: " + err));
+    .then(stream => {
+      video.srcObject = stream;
+      videoTrack = stream.getVideoTracks()[0];
 
-    // 4. Döviz ve Miktar Ayrıştırma
+      // Cihazın flaş/fener desteği var mı kontrol et
+      const capabilities = videoTrack.getCapabilities ? videoTrack.getCapabilities() : {};
+      if (capabilities.torch) {
+        torchBtn.style.display = 'flex';
+      }
+    })
+    .catch(err => alert("Kamera izni gerekiyor: " + err));
+
+    // Fener Aç/Kapa Fonksiyonu
+    async function toggleTorch() {
+      if (!videoTrack) return;
+      try {
+        isTorchOn = !isTorchOn;
+        await videoTrack.applyConstraints({
+          advanced: [{ torch: isTorchOn }]
+        });
+        torchBtn.classList.toggle('active', isTorchOn);
+        vibrate(30); // Buton dokunma hissi
+      } catch (err) {
+        console.error("Fener açılamadı:", err);
+      }
+    }
+
+    // Titreşim Yardımcısı
+    function vibrate(pattern) {
+      if ('vibrate' in navigator) {
+        navigator.vibrate(pattern);
+      }
+    }
+
+    // 4. Döviz ve Rakam Ayrıştırma
     function parseCurrency(raw) {
       const symbols = [
         { regex: /[$|USD]/i, code: 'USD' },
@@ -102,16 +171,14 @@
         }
       }
 
-      // Sayı yakala (örn: 12.99, 12,99 veya 1200)
       const matches = raw.match(/\d+([.,]\d{1,2})?/g);
       if (!matches) return null;
 
-      // Genelde en büyük veya tek olan sayı fiyattır
       const cleanVal = matches[0].replace(',', '.');
       return { code: detectedCode, amount: parseFloat(cleanVal) };
     }
 
-    // 5. Kırpma, Kontrastlama ve Okuma
+    // 5. Kırpma, OCR ve Çevrim
     async function captureAndConvert() {
       const btn = document.getElementById('scan-btn');
       const det = document.getElementById('detected-text');
@@ -119,18 +186,15 @@
       btn.disabled = true;
       det.innerText = "Okunuyor...";
 
-      // Ekran üzerindeki video ve çerçeve boyutları
       const videoRect = video.getBoundingClientRect();
       const frameRect = document.getElementById('scan-frame').getBoundingClientRect();
 
-      // object-fit: cover oranlarını ve gerçek video çözünürlüğünü hesapla
       const scale = Math.max(video.videoWidth / videoRect.width, video.videoHeight / videoRect.height);
       const renderedW = videoRect.width * scale;
       const renderedH = videoRect.height * scale;
       const offsetX = (renderedW - video.videoWidth) / 2;
       const offsetY = (renderedH - video.videoHeight) / 2;
 
-      // Çerçevenin gerçek video karesindeki koordinatları (Crop Alanı)
       const cropX = Math.max(0, (frameRect.left - videoRect.left) * scale - offsetX);
       const cropY = Math.max(0, (frameRect.top - videoRect.top) * scale - offsetY);
       const cropW = frameRect.width * scale;
@@ -141,20 +205,18 @@
       canvas.height = cropH;
       const ctx = canvas.getContext('2d');
 
-      // Yalnızca seçili kutu alanını çiz
       ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
-      // Görüntü İşleme: Kontrast ve Siyah-Beyaz Eşikleme (Binarization)
+      // Kontrast & Siyah-Beyaz Eşikleme
       const imgData = ctx.getImageData(0, 0, cropW, cropH);
       const d = imgData.data;
       for (let i = 0; i < d.length; i += 4) {
-        const v = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114); // Gri tonlama
-        const threshold = v > 128 ? 255 : 0; // Siyah-beyaz eşiği
+        const v = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114);
+        const threshold = v > 128 ? 255 : 0;
         d[i] = d[i + 1] = d[i + 2] = threshold;
       }
       ctx.putImageData(imgData, 0, 0);
 
-      // OCR Çalıştır
       try {
         const { data: { text } } = await tesseractWorker.recognize(canvas);
         const result = parseCurrency(text);
@@ -163,12 +225,17 @@
           const total = (result.amount * rates[result.code]).toFixed(2);
           det.innerText = `Okunan: ${result.amount} ${result.code}`;
           conv.innerText = `₺${total}`;
+          // Başarılı algılama: çift vuruşlu onay titreşimi
+          vibrate([60, 40, 60]);
         } else {
-          det.innerText = "Fiyat tespit edilemedi. Biraz daha yaklaştırın.";
+          det.innerText = "Fiyat tespit edilemedi. Tekrar deneyin.";
+          // Hata / okunamadı uyarısı: tek uzun titreşim
+          vibrate(120);
         }
       } catch (err) {
         console.error(err);
         det.innerText = "Tarama hatası oluştu.";
+        vibrate(150);
       }
 
       btn.disabled = false;
